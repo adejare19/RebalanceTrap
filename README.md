@@ -1,52 +1,111 @@
+# **RebalanceTrap**
 
-#  Rebalance Trap
+## **Overview**
 
-## Overview
+The **RebalanceTrap** is a Drosera-compatible monitoring contract that tracks **price deviation between two liquidity pools** (e.g., Uniswap-style Pool A vs. Pool B) and automatically determines when the deviation exceeds a configurable threshold.
 
-This trap is designed to monitor and respond to significant shifts in the balance of a specific Automated Market Maker (AMM) **Liquidity Pool** (e.g., a Uniswap V3 Pool). It serves as a detection mechanism for a pool becoming critically imbalanced or suffering from large price divergence, which is the precursor for a profitable (and necessary) rebalance operation.
+Once deployed inside the Drosera network, the trap enables fully automated **liquidity imbalance detection**, serving as the basis for advanced DeFi automation strategies such as:
 
------
+* liquidity syncing between DEXes
+* cross-pool arbitrage monitoring
+* yield-optimizing vault execution
+* multi-DEX rebalancing strategies
 
-## What It Does
+This repository contains the full smart-contract suite, executor, fee routing module, and mock pools for testing.
 
-  * Monitors the liquidity and price ratio of a designated **TARGET pool** at the end of each sampling epoch.
-  * Triggers if the current pool state (e.g., token ratio, utilization, or effective price) moves outside of a pre-defined range or **THRESHOLD**.
-  * It demonstrates the essential Drosera trap pattern using deterministic off-chain logic to analyze complex on-chain state data.
+---
 
------
+## **What It Does**
 
-## Key Files
+✅ Reads price data from **two independent pools**
+✅ Computes the **delta** and deviation in **basis points (bps)**
+✅ Detects when the **spread exceeds a configurable threshold (default: 2%)**
+✅ Emits `RebalanceTriggered()` when a deviation is detected
+✅ Supports simulated profit routing through `FeeSkimmer`
 
-  * **`src/RebalanceTrap.sol`** – The core trap contract containing the monitoring logic.
-  * **`src/RebalanceResponder.sol`** – The required external response contract that executes the complex rebalance action (e.g., swapping tokens to restore balance).
-  * **`drosera.toml`** – The deployment, configuration, and operator-specific settings file.
+The trap follows Drosera’s deterministic execution model:
 
------
+* **collect()** → gather data
+* **shouldRespond()** → evaluate conditions
+* **respond()** → execute action
 
-## Detection Logic
+---
 
-The trap uses Drosera's deterministic planning model to detect imbalance in the pool state. It collects the current state (PoolState) and then reduces the data to a single value, comparing the state to a fixed threshold.
+## **Key Files**
 
-During each planning epoch, the logic performs the following steps:
+| File                        | Description                                                |
+| --------------------------- | ---------------------------------------------------------- |
+| `src/RebalanceTrap.sol`     | Core trap containing deviation-detection logic             |
+| `src/RebalanceExecutor.sol` | Optional mock contract that simulates a rebalance action   |
+| `src/MockPool.sol`          | Simulated AMM pools for testing prices and reserve changes |
+| `src/FeeSkimmer.sol`        | Handles performance + execution fee logic                  |
+| `drosera.toml`              | Configuration used for running the trap on Drosera         |
 
-### `collect()`
+---
 
-1.  Fetches the complex state variables from the **TARGET Pool** contract (e.g., `token0/token1 reserves`, `current tick`, or `liquidity`).
-2.  Calculates a simple metric (e.g., a deviation percentage or a critical tick distance) from the raw data.
-3.  Encodes the collected data as a tuple: `(uint256 currentDeviationMetric, uint256 currentBlockNumber)`.
+## **Detection Logic**
 
-### `shouldRespond()`
+The trap follows Drosera’s two-phase sampling cycle:
 
-1.  Safely guards against empty or incomplete data during the planning process.
-2.  Decodes the newest sample as a single metric: `(currMetric, currBlk)`.
-3.  Compares the `currMetric` against the pre-defined **THRESHOLD**.
-4.  Returns `(true, abi.encode(currMetric))` if the current state exceeds the configurable **THRESHOLD** (e.g., a deviation greater than 5%).
+### **1. collect()**
 
------
+During sampling, the trap:
 
-## ⚙️ Solidity Implementation (Key Logic)
+* reads `getPrice()` from both pools
+* returns the data encoded as:
 
-The trap logic simplifies the complex pool state into a single, easy-to-check metric.
+```
+(priceA, priceB)
+```
+
+Example:
+
+```
+(1000, 950)
+```
+
+---
+
+### **2. shouldRespond()**
+
+Drosera passes the collected samples into:
+
+```solidity
+function shouldRespond(bytes[] calldata data)
+```
+
+The trap then:
+
+1. Decodes the latest price pair.
+2. Computes:
+
+```solidity
+delta = priceA – priceB
+absDelta = |delta|
+deviationBps = absDelta * 1e4 / priceB
+```
+
+3. If `deviationBps > threshold`, it returns:
+
+```solidity
+(true, "Rebalance needed")
+```
+
+Otherwise:
+
+```solidity
+(false, "")
+```
+
+This design ensures the trap remains:
+
+✅ deterministic
+✅ safe for planning
+✅ free of side-effects
+
+---
+
+## ⚙️ **Solidity Logic (Key View Only)**
 
 ```solidity
 function shouldRespond(bytes[] calldata data)
@@ -55,35 +114,129 @@ function shouldRespond(bytes[] calldata data)
     override
     returns (bool, bytes memory)
 {
-    // Safety guards...
-    // Decodes the current metric (uint256) and block number
-    (uint256 currMetric, ) = abi.decode(data[0], (uint256, uint256));
-    
-    // THRESHOLD is a constant representing max allowed deviation (e.g., 500 = 5%)
-    if (currMetric > THRESHOLD) {
-        // Return true and the deviation metric for the responder to use
-        return (true, abi.encode(currMetric)); 
+    (uint256 priceA, uint256 priceB) = abi.decode(data[0], (uint256, uint256));
+
+    int256 delta = int256(priceA) - int256(priceB);
+    uint256 deviationBps =
+        uint256(delta > 0 ? delta : -delta) * 1e4 / priceB;
+
+    if (deviationBps > 200) {
+        return (true, abi.encode("Rebalance needed"));
     }
 
-    return (false, abi.encode(uint256(0)));
+    return (false, "");
 }
 ```
 
------
+---
 
-## Implementation Details and Key Concepts
+## **Execution Logic (respond())**
 
-  * **Monitoring Metric:** Watching the calculated deviation of the pool's price/reserves from an acceptable target.
-  * **Resilience:** The trap logic only relies on the instantaneous pool state, ensuring determinism across all operators at the same block height.
-  * **Threshold:** The `THRESHOLD` constant defines the maximum allowable deviation before a rebalance is considered profitable or necessary.
-  * **Response Mechanism:** On trigger, the trap returns the **current deviation metric**, which the external `RebalanceResponder` contract consumes via the expected `handle(bytes)` function to calculate and execute the optimal rebalancing trade.
+When Drosera decides the trap must execute, it calls:
 
------
+```solidity
+respond()
+```
 
-## Test It
+The trap performs:
 
-To verify the trap logic using Foundry, run the following command (assuming a test file has been created, e.g., `test/RebalanceTrap.t.sol`):
+1. Fetch updated pool prices
+2. Update internal state
+3. Emit `RebalanceTriggered()`
+4. Forward simulated profit to `FeeSkimmer`
 
-```bash
+```solidity
+uint256 simulatedProfit = address(this).balance;
+if (simulatedProfit > 0) {
+    skimmer.skim(simulatedProfit);
+}
+```
+
+This design can be upgraded to handle **real vault yield** in later versions.
+
+---
+
+## **Implementation Details and Key Concepts**
+
+### ✅ Monitoring Metric
+
+Cross-pool **price deviation** in basis points.
+
+### ✅ Simple & Robust Data Model
+
+Uses only two values: `(priceA, priceB)` — no AMM math required.
+
+### ✅ Threshold
+
+Default:
+
+```
+threshold = 200 bps  // 2%
+```
+
+### ✅ Event Surface
+
+The frontend can index:
+
+```
+RebalanceTriggered(uint256 blockNumber, int256 delta, address executor)
+```
+
+Useful for:
+
+* deviation graphs
+* APY projections
+* historical automation logs
+
+### ✅ Fee Model
+
+`FeeSkimmer` supports:
+
+* performance fee
+* execution fee
+* configurable treasury routing
+
+Fully extendable to integrate `DRO` token after TGE.
+
+---
+
+## ✅ **How to Test It**
+
+### Using Foundry
+
+```
 forge test --match-contract RebalanceTrap
-```# RebalanceTrap
+```
+
+### Manually simulate price changes
+
+```
+cast send <poolAddress> "setPrice(uint256)" 870 --rpc-url <rpc>
+```
+
+Test deviation manually:
+
+```
+cast call <trapAddress> "collect()" [...]
+cast call <trapAddress> "shouldRespond(bytes[])" [...]
+```
+
+---
+
+## ✅ **Deployment Notes**
+
+Your deploy script will output:
+
+* Pool A
+* Pool B
+* FeeSkimmer
+* RebalanceTrap
+* RebalanceExecutor
+
+These values are referenced in:
+
+```
+drosera.toml
+```
+
+ou want a cleaner GitHub aesthetic (badges, architecture diagram, code snippets, cover image), I can format it.
