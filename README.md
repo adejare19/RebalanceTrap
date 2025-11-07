@@ -1,95 +1,89 @@
-# Drosera Trap Foundry Template
 
-This repo is for quickly bootstrapping a new Drosera project. It includes instructions for creating your first trap, deploying it to the Drosera network, and updating it on the fly.
+#  Rebalance Trap
 
-[![view - Documentation](https://img.shields.io/badge/view-Documentation-blue?style=for-the-badge)](https://dev.drosera.io "Project documentation")
-[![Twitter](https://img.shields.io/twitter/follow/DroseraNetwork?style=for-the-badge)](https://x.com/DroseraNetwork)
+## Overview
 
-## Configure dev environment
+This trap is designed to monitor and respond to significant shifts in the balance of a specific Automated Market Maker (AMM) **Liquidity Pool** (e.g., a Uniswap V3 Pool). It serves as a detection mechanism for a pool becoming critically imbalanced or suffering from large price divergence, which is the precursor for a profitable (and necessary) rebalance operation.
+
+-----
+
+## What It Does
+
+  * Monitors the liquidity and price ratio of a designated **TARGET pool** at the end of each sampling epoch.
+  * Triggers if the current pool state (e.g., token ratio, utilization, or effective price) moves outside of a pre-defined range or **THRESHOLD**.
+  * It demonstrates the essential Drosera trap pattern using deterministic off-chain logic to analyze complex on-chain state data.
+
+-----
+
+## Key Files
+
+  * **`src/RebalanceTrap.sol`** – The core trap contract containing the monitoring logic.
+  * **`src/RebalanceResponder.sol`** – The required external response contract that executes the complex rebalance action (e.g., swapping tokens to restore balance).
+  * **`drosera.toml`** – The deployment, configuration, and operator-specific settings file.
+
+-----
+
+## Detection Logic
+
+The trap uses Drosera's deterministic planning model to detect imbalance in the pool state. It collects the current state (PoolState) and then reduces the data to a single value, comparing the state to a fixed threshold.
+
+During each planning epoch, the logic performs the following steps:
+
+### `collect()`
+
+1.  Fetches the complex state variables from the **TARGET Pool** contract (e.g., `token0/token1 reserves`, `current tick`, or `liquidity`).
+2.  Calculates a simple metric (e.g., a deviation percentage or a critical tick distance) from the raw data.
+3.  Encodes the collected data as a tuple: `(uint256 currentDeviationMetric, uint256 currentBlockNumber)`.
+
+### `shouldRespond()`
+
+1.  Safely guards against empty or incomplete data during the planning process.
+2.  Decodes the newest sample as a single metric: `(currMetric, currBlk)`.
+3.  Compares the `currMetric` against the pre-defined **THRESHOLD**.
+4.  Returns `(true, abi.encode(currMetric))` if the current state exceeds the configurable **THRESHOLD** (e.g., a deviation greater than 5%).
+
+-----
+
+## ⚙️ Solidity Implementation (Key Logic)
+
+The trap logic simplifies the complex pool state into a single, easy-to-check metric.
+
+```solidity
+function shouldRespond(bytes[] calldata data)
+    external
+    pure
+    override
+    returns (bool, bytes memory)
+{
+    // Safety guards...
+    // Decodes the current metric (uint256) and block number
+    (uint256 currMetric, ) = abi.decode(data[0], (uint256, uint256));
+    
+    // THRESHOLD is a constant representing max allowed deviation (e.g., 500 = 5%)
+    if (currMetric > THRESHOLD) {
+        // Return true and the deviation metric for the responder to use
+        return (true, abi.encode(currMetric)); 
+    }
+
+    return (false, abi.encode(uint256(0)));
+}
+```
+
+-----
+
+## Implementation Details and Key Concepts
+
+  * **Monitoring Metric:** Watching the calculated deviation of the pool's price/reserves from an acceptable target.
+  * **Resilience:** The trap logic only relies on the instantaneous pool state, ensuring determinism across all operators at the same block height.
+  * **Threshold:** The `THRESHOLD` constant defines the maximum allowable deviation before a rebalance is considered profitable or necessary.
+  * **Response Mechanism:** On trigger, the trap returns the **current deviation metric**, which the external `RebalanceResponder` contract consumes via the expected `handle(bytes)` function to calculate and execute the optimal rebalancing trade.
+
+-----
+
+## Test It
+
+To verify the trap logic using Foundry, run the following command (assuming a test file has been created, e.g., `test/RebalanceTrap.t.sol`):
 
 ```bash
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
-
-# The trap-foundry-template utilizes node modules for dependency management
-# install Bun (optional)
-curl -fsSL https://bun.sh/install | bash
-
-# install node modules
-bun install
-
-# install vscode (optional)
-# - add solidity extension JuanBlanco.solidity
-
-# install drosera-cli
-curl -L https://app.drosera.io/install | bash
-droseraup
-```
-
-open the VScode preferences and Select `Soldity: Change workpace compiler version (Remote)`
-
-Select version `0.8.12`
-
-## Quick Start
-
-### Hello World Trap
-
-The drosera.toml file is configured to deploy a simple "Hello, World!" trap. Ensure the drosera.toml file is set to the following configuration:
-
-```toml
-response_contract = "0xdA890040Af0533D98B9F5f8FE3537720ABf83B0C"
-response_function = "helloworld(string)"
-```
-
-To deploy the trap, run the following commands:
-
-```bash
-# Compile the Trap
-forge build
-
-# Deploy the Trap
-DROSERA_PRIVATE_KEY=0x.. drosera apply
-```
-
-After successfully deploying the trap, the CLI will add an `address` field to the `drosera.toml` file.
-
-Congratulations! You have successfully deployed your first trap!
-
-### Response Trap
-
-You can then update the trap by changing its logic and recompling it or changing the path field in the `drosera.toml` file to point to the Response Trap.
-
-The Response Trap is designed to trigger a response at a specific block number. To test the Response Trap, pick a future block number and update the Response Trap.
-Specify a response contract address and function signature in the drosera.toml file to the following:
-
-```toml
-response_contract = "0x183D78491555cb69B68d2354F7373cc2632508C7"
-response_function = "responseCallback(uint256)"
-```
-
-Finally, deploy the Response Trap by running the following commands:
-
-```bash
-# Compile the Trap
-forge build
-
-# Deploy the Trap
-DROSERA_PRIVATE_KEY=0x.. drosera apply
-```
-
-> Note: The `DROSERA_PRIVATE_KEY` environment variable can be used to deploy traps. You can also set it in the drosera.toml file as `private_key = "0x.."`.
-
-
-### Transfer Event Trap
-The TransferEventTrap is an example of how a Trap can parse event logs from a block and respond to a specific ERC-20 token transfer events.
-
-To deploy the Transfer Event Trap, uncomment the `transfer_event_trap` section in the `drosera.toml` file. Add the token address to the `tokenAddress` constant in the `TransferEventTrap.sol` file and then deploy the trap.
-
-## Testing
-
-Example tests are included in the `tests` directory. They simulate how Drosera Operators execute traps and determine if a response should be triggered. To run the tests, execute the following command:
-
-```bash
-forge test
-```
-# RebalanceTrap
+forge test --match-contract RebalanceTrap
+```# RebalanceTrap

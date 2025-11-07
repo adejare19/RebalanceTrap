@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Trap} from "contracts/Trap.sol";
+
+interface IUniswapPool {
+    function getPrice() external view returns (uint256);
+}
+
+contract RebalanceTrap is Trap {
+    IUniswapPool public poolA;
+    IUniswapPool public poolB;
+
+    uint256 public lastDelta;
+    uint256 public threshold = 200; // 2% in basis points
+
+    event RebalanceTriggered(uint256 blockNumber, int256 delta, address executor);
+
+    // Use initialize() instead of constructor for Drosera compatibility
+    function initialize(address _poolA, address _poolB) external {
+        poolA = IUniswapPool(_poolA);
+        poolB = IUniswapPool(_poolB);
+    }
+
+    // ✅ Must match Drosera interface
+    function collect() external view override returns (bytes memory) {
+        uint256 priceA = poolA.getPrice();
+        uint256 priceB = poolB.getPrice();
+        return abi.encode(priceA, priceB);
+    }
+
+    // ✅ Pure evaluation logic
+    function shouldRespond(bytes[] calldata data)
+        external
+        pure
+        override
+        returns (bool, bytes memory)
+    {
+        (uint256 priceA, uint256 priceB) = abi.decode(data[0], (uint256, uint256));
+        uint256 deviation = priceA > priceB
+            ? ((priceA - priceB) * 1e4) / priceB
+            : ((priceB - priceA) * 1e4) / priceA;
+
+        if (deviation > 200) {
+            return (true, bytes("Rebalance needed"));
+        }
+
+        return (false, bytes(""));
+    }
+
+    // ✅ Non-pure, can emit e
+
+
+}
